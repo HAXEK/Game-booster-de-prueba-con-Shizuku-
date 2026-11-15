@@ -327,8 +327,6 @@ fun RenderTabContent(
                     sliderValue = newValue
                 },
                 onValueChangeFinished = {},
-
-                },
                 valueRange = 0.50f..1.0f,
                 steps = 4, // 50%, 60%, 70%, 80%, 90%, 100%
                 colors = SliderDefaults.colors(
