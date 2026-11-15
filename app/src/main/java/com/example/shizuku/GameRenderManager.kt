@@ -45,91 +45,43 @@ class GameRenderManager(
         return Triple(width, height, density)
     }
 
-    suspend fun applyRenderScale(packageName: String, scale: Float): Boolean = withContext(Dispatchers.IO) {
+        suspend fun applyRenderScale(packageName: String, scale: Float): Boolean = withContext(Dispatchers.IO) {
+        if (packageName.isBlank()) return@withContext false
         val clampedScale = scale.coerceIn(0.50f, 1.0f)
         val formattedScale = String.format(Locale.US, "%.2f", clampedScale)
 
-        _state.update {
-            it.copy(
-                isOperating = true,
-                statusMessage = "Aplicando escala ${(clampedScale * 100).toInt()}% vía Shizuku..."
-            )
-        }
+        _state.update { it.copy(isOperating = true, statusMessage = "Aplicando Modo Ligero ${(clampedScale * 100).toInt()}%...") }
 
-        if (clampedScale >= 0.98f) {
-            return@withContext resetRenderScale(packageName)
-        }
+        if (clampedScale >= 0.98f) return@withContext resetRenderScale(packageName)
 
-        val metrics = getPhysicalDisplayMetrics()
-        if (metrics == null) {
-            _state.update {
-                it.copy(
-                    isOperating = false,
-                    statusMessage = "Error: No se pudo conectar con Shizuku para leer pantalla"
-                )
-            }
-            return@withContext false
-        }
-
-        val (physW, physH, physDpi) = metrics
-        // Asegurar dimensiones pares para evitar fallos en SurfaceFlinger
-        val targetW = ((physW * clampedScale).roundToInt() / 2) * 2
-        val targetH = ((physH * clampedScale).roundToInt() / 2) * 2
-        val targetDpi = (physDpi * clampedScale).roundToInt().coerceAtLeast(160)
-
-        val cmd = buildString {
-            append("wm size ${targetW}x${targetH} && ")
-            append("wm density $targetDpi && ")
-            append("cmd power set-fixed-performance-mode-enabled true ; ")
-            append("cmd game mode performance $packageName 2>/dev/null ; ")
-            append("device_config put game_overlay $packageName \"mode=2,downscaleFactor=$formattedScale\" 2>/dev/null")
-        }
+        val cmd = "device_config set_sync_disabled_for_tests persistent ; " +
+                  "device_config put game_overlay $packageName \"mode=2,downscaleFactor=$formattedScale\" && " +
+                  "cmd game mode performance $packageName ; " +
+                  "am force-stop $packageName && " +
+                  "monkey -p $packageName -c android.intent.category.LAUNCHER 1"
 
         val result = scriptManager.executeCommand(cmd)
-        val success = result.isSuccess
 
         _state.update {
             it.copy(
                 renderScale = clampedScale,
-                isDownscaleActive = success,
+                isDownscaleActive = result.isSuccess,
                 isOperating = false,
-                statusMessage = if (success) {
-                    "Activo: ${(clampedScale * 100).toInt()}% (${targetW}x${targetH})"
-                } else {
-                    "Fallo Shizuku: ${result.stderr}"
-                }
+                statusMessage = if (result.isSuccess) "Modo Ligero activo: ${(clampedScale * 100).toInt()}%" else "No soportado por el juego"
             )
         }
-
-        Log.d(TAG, "applyRenderScale -> $success | ${result.stderr}")
-        success
+        result.isSuccess
     }
 
     suspend fun resetRenderScale(packageName: String): Boolean = withContext(Dispatchers.IO) {
-        _state.update { it.copy(isOperating = true, statusMessage = "Restaurando resolución nativa...") }
-
-        val cmd = buildString {
-            append("wm size reset && ")
-            append("wm density reset && ")
-            append("cmd power set-fixed-performance-mode-enabled false ; ")
-            append("cmd game reset $packageName 2>/dev/null ; ")
-            append("device_config delete game_overlay $packageName 2>/dev/null")
-        }
-
-        val result = scriptManager.executeCommand(cmd)
-        val success = result.isSuccess
-
+        val cmd = "device_config delete game_overlay $packageName ; cmd game reset $packageName"
+        scriptManager.executeCommand(cmd)
         _state.update {
-            it.copy(
-                renderScale = 1.0f,
-                isDownscaleActive = false,
-                isOperating = false,
-                statusMessage = if (success) "Renderizado nativo restaurado (100%)" else "Error: ${result.stderr}"
-            )
+            it.copy(renderScale = 1.0f, isDownscaleActive = false, isOperating = false, statusMessage = "Resolución nativa restaurada (100%)")
         }
-
-        success
+        true
     }
+
 
     suspend fun toggleDisableMsaa(disable: Boolean): Boolean = withContext(Dispatchers.IO) {
         val cmd = if (disable) {
