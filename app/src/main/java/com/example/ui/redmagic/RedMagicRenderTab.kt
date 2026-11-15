@@ -1,5 +1,8 @@
 package com.example.ui.redmagic
 
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -323,8 +326,8 @@ fun RenderTabContent(
                 onValueChange = { newValue ->
                     sliderValue = newValue
                 },
-                onValueChangeFinished = {
-                    onRenderScaleChange(sliderValue)
+                onValueChangeFinished = {},
+
                 },
                 valueRange = 0.50f..1.0f,
                 steps = 4, // 50%, 60%, 70%, 80%, 90%, 100%
@@ -367,7 +370,8 @@ fun RenderTabContent(
                             )
                             .clickable {
                                 sliderValue = scale
-                                onRenderScaleChange(scale)
+                                sliderValue = scale
+
                             }
                             .padding(vertical = 8.dp),
                         contentAlignment = Alignment.Center
@@ -382,6 +386,23 @@ fun RenderTabContent(
                 }
             }
         }
+    }
+
+    Box(
+    modifier = Modifier
+        .fillMaxWidth()
+        .clip(RoundedCornerShape(8.dp))
+        .background(RmAccentCyan)
+        .clickable { onRenderScaleChange(sliderValue) }
+        .padding(vertical = 10.dp),
+    contentAlignment = Alignment.Center
+) {
+    Text(
+        text = "GUARDAR Y APLICAR ($percentage%)",
+        color = Color.Black,
+        fontWeight = FontWeight.Black,
+        fontSize = 12.sp
+    )
     }
 
     // 4. Desactivación forzada de Anti-Aliasing (MSAA) y Filtros Pesados
