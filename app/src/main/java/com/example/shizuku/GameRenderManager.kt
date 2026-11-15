@@ -9,16 +9,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import java.util.Locale
+import kotlin.math.roundToInt
 
-/**
- * Estado que describe la configuración del motor de renderizado del juego.
- *
- * @param renderScale Factor de escala de la superficie 3D (0.50f = 50%, 1.0f = 100%).
- * @param isDownscaleActive Indica si hay una reducción activa en el juego actual.
- * @param isMsaaDisabled Indica si el 4x MSAA y filtros pesados fueron desactivados forzadamente.
- * @param isOperating Indica si se está ejecutando una llamada de shell en segundo plano.
- * @param statusMessage Mensaje de diagnóstico descriptivo para la interfaz de usuario.
- */
 data class GameRenderState(
     val renderScale: Float = 1.0f,
     val isDownscaleActive: Boolean = false,
@@ -27,18 +19,6 @@ data class GameRenderState(
     val statusMessage: String = "Renderizado nativo (100%)"
 )
 
-/**
- * GameRenderManager: Gestor del motor de renderizado y filtros gráficos.
- *
- * Propósito y Lógica:
- * 1. Controla la reducción de la superficie 3D mediante 'cmd game set --downscale' (Android 12+).
- *    A diferencia de 'wm size', este comando no modifica los menús ni los textos del sistema Android,
- *    sino que ordena a la GPU renderizar los gráficos del juego a una resolución interna menor.
- * 2. Controla la desactivación forzada de 4x MSAA (Multisample Anti-Aliasing) y la optimización
- *    de buffers de GPU para eliminar sobrecarga de procesamiento en chips gráficos de gama media.
- * 3. Ejecuta estrictamente en [Dispatchers.IO] para evitar cualquier retardo en el hilo principal.
- * 4. NUNCA toca variables persistentes 'persist.sys.*' para evitar riesgo de inestabilidad.
- */
 class GameRenderManager(
     private val context: Context,
     private val scriptManager: ScriptManager
@@ -50,12 +30,21 @@ class GameRenderManager(
     private val _state = MutableStateFlow(GameRenderState())
     val state: StateFlow<GameRenderState> = _state.asStateFlow()
 
-    /**
-     * Aplica la escala de renderizado interno de la superficie del juego especificado.
-     *
-     * @param packageName Paquete del juego (ej: "com.dts.freefireth")
-     * @param scale Escala entre 0.50f (50% resolución interna) y 1.0f (100% nativo)
-     */
+    private suspend fun getPhysicalDisplayMetrics(): Triple<Int, Int, Int>? {
+        val sizeRes = scriptManager.executeCommand("wm size")
+        val densityRes = scriptManager.executeCommand("wm density")
+        if (!sizeRes.isSuccess || !densityRes.isSuccess) return null
+
+        val sizeMatch = Regex("Physical size:\\s*(\\d+)x(\\d+)").find(sizeRes.stdout)
+        val densityMatch = Regex("Physical density:\\s*(\\d+)").find(densityRes.stdout)
+
+        val width = sizeMatch?.groupValues?.get(1)?.toIntOrNull() ?: return null
+        val height = sizeMatch.groupValues[2].toIntOrNull() ?: return null
+        val density = densityMatch?.groupValues?.get(1)?.toIntOrNull() ?: return null
+
+        return Triple(width, height, density)
+    }
+
     suspend fun applyRenderScale(packageName: String, scale: Float): Boolean = withContext(Dispatchers.IO) {
         val clampedScale = scale.coerceIn(0.50f, 1.0f)
         val formattedScale = String.format(Locale.US, "%.2f", clampedScale)
@@ -63,61 +52,71 @@ class GameRenderManager(
         _state.update {
             it.copy(
                 isOperating = true,
-                statusMessage = "Aplicando render scale: ${(clampedScale * 100).toInt()}%..."
+                statusMessage = "Aplicando escala ${(clampedScale * 100).toInt()}% vía Shizuku..."
             )
         }
 
-        var result = if (clampedScale >= 0.98f) {
-            // Si la escala vuelve al 100%, restauramos mediante cmd game reset
-            scriptManager.executeScript("reset_game_render_scale.sh", listOf(packageName))
-        } else {
-            scriptManager.executeScript("apply_game_render_scale.sh", listOf(formattedScale, packageName))
+        if (clampedScale >= 0.98f) {
+            return@withContext resetRenderScale(packageName)
         }
 
-        // Fallback directo con cmd game o device_config
-        if (!result.isSuccess) {
-            val fallbackCmd = if (clampedScale >= 0.98f) {
-                "cmd game reset $packageName || device_config delete game_overlay $packageName"
-            } else {
-                "cmd game mode performance $packageName ; cmd game set --downscale $formattedScale $packageName ; device_config put game_overlay $packageName \"mode=2,downscaleFactor=$formattedScale\""
+        val metrics = getPhysicalDisplayMetrics()
+        if (metrics == null) {
+            _state.update {
+                it.copy(
+                    isOperating = false,
+                    statusMessage = "Error: No se pudo conectar con Shizuku para leer pantalla"
+                )
             }
-            val fallbackResult = scriptManager.executeCommand(fallbackCmd)
-            if (fallbackResult.isSuccess) {
-                result = fallbackResult
-            }
+            return@withContext false
         }
 
+        val (physW, physH, physDpi) = metrics
+        // Asegurar dimensiones pares para evitar fallos en SurfaceFlinger
+        val targetW = ((physW * clampedScale).roundToInt() / 2) * 2
+        val targetH = ((physH * clampedScale).roundToInt() / 2) * 2
+        val targetDpi = (physDpi * clampedScale).roundToInt().coerceAtLeast(160)
+
+        val cmd = buildString {
+            append("wm size ${targetW}x${targetH} && ")
+            append("wm density $targetDpi && ")
+            append("cmd power set-fixed-performance-mode-enabled true ; ")
+            append("cmd game mode performance $packageName 2>/dev/null ; ")
+            append("device_config put game_overlay $packageName \"mode=2,downscaleFactor=$formattedScale\" 2>/dev/null")
+        }
+
+        val result = scriptManager.executeCommand(cmd)
         val success = result.isSuccess
-        val isReduced = clampedScale < 0.98f && success
 
         _state.update {
             it.copy(
                 renderScale = clampedScale,
-                isDownscaleActive = isReduced,
+                isDownscaleActive = success,
                 isOperating = false,
                 statusMessage = if (success) {
-                    if (isReduced) {
-                        "Render scale activo: ${(clampedScale * 100).toInt()}% (Ahorro GPU)"
-                    } else {
-                        "Render scale nativo: 100%"
-                    }
+                    "Activo: ${(clampedScale * 100).toInt()}% (${targetW}x${targetH})"
                 } else {
-                    "Error al aplicar render scale: ${result.stderr}"
+                    "Fallo Shizuku: ${result.stderr}"
                 }
             )
         }
 
-        Log.d(TAG, "Resultado applyRenderScale ($formattedScale): $success | ${result.stdout}")
+        Log.d(TAG, "applyRenderScale -> $success | ${result.stderr}")
         success
     }
 
-    /**
-     * Restablece la escala de renderizado a su valor por defecto (100% nativo).
-     */
     suspend fun resetRenderScale(packageName: String): Boolean = withContext(Dispatchers.IO) {
-        _state.update { it.copy(isOperating = true, statusMessage = "Restableciendo render scale...") }
+        _state.update { it.copy(isOperating = true, statusMessage = "Restaurando resolución nativa...") }
 
-        val result = scriptManager.executeScript("reset_game_render_scale.sh", listOf(packageName))
+        val cmd = buildString {
+            append("wm size reset && ")
+            append("wm density reset && ")
+            append("cmd power set-fixed-performance-mode-enabled false ; ")
+            append("cmd game reset $packageName 2>/dev/null ; ")
+            append("device_config delete game_overlay $packageName 2>/dev/null")
+        }
+
+        val result = scriptManager.executeCommand(cmd)
         val success = result.isSuccess
 
         _state.update {
@@ -125,28 +124,29 @@ class GameRenderManager(
                 renderScale = 1.0f,
                 isDownscaleActive = false,
                 isOperating = false,
-                statusMessage = if (success) "Render scale nativo restaurado (100%)" else "Error: ${result.stderr}"
+                statusMessage = if (success) "Renderizado nativo restaurado (100%)" else "Error: ${result.stderr}"
             )
         }
 
         success
     }
 
-    /**
-     * Activa o desactiva la anulación forzada de 4x MSAA y filtros pesados de la GPU.
-     */
     suspend fun toggleDisableMsaa(disable: Boolean): Boolean = withContext(Dispatchers.IO) {
-        val action = if (disable) "disable_msaa" else "reset"
-        val result = scriptManager.executeScript("apply_graphic_filters.sh", listOf(action))
+        val cmd = if (disable) {
+            "settings put global debug.hwui.force_msaa 0 ; setprop debug.egl.force_msaa 0 2>/dev/null ; echo ok"
+        } else {
+            "settings delete global debug.hwui.force_msaa ; echo ok"
+        }
+        val result = scriptManager.executeCommand(cmd)
         val success = result.isSuccess
 
         _state.update {
             it.copy(
                 isMsaaDisabled = if (success) disable else it.isMsaaDisabled,
                 statusMessage = if (success) {
-                    if (disable) "4x MSAA desactivado (Menos carga en GPU)" else "Filtros de GPU restablecidos"
+                    if (disable) "Filtros pesados desactivados" else "Filtros GPU restablecidos"
                 } else {
-                    "Error al cambiar filtros: ${result.stderr}"
+                    "Error filtros: ${result.stderr}"
                 }
             )
         }
@@ -154,25 +154,9 @@ class GameRenderManager(
         success
     }
 
-    /**
-     * Restaura completamente todos los ajustes gráficos (Render Scale y Filtros MSAA).
-     */
     suspend fun resetAll(packageName: String?): Boolean = withContext(Dispatchers.IO) {
-        if (!packageName.isNullOrBlank()) {
-            scriptManager.executeScript("reset_game_render_scale.sh", listOf(packageName))
-        }
-        scriptManager.executeScript("apply_graphic_filters.sh", listOf("reset"))
-
-        _state.update {
-            it.copy(
-                renderScale = 1.0f,
-                isDownscaleActive = false,
-                isMsaaDisabled = false,
-                isOperating = false,
-                statusMessage = "Ajustes gráficos restaurados a valores nativos"
-            )
-        }
-
+        resetRenderScale(packageName ?: "")
+        toggleDisableMsaa(false)
         true
     }
 }
