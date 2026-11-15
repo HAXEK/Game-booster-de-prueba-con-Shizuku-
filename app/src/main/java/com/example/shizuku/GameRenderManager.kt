@@ -1,7 +1,6 @@
- package com.example.shizuku
+package com.example.shizuku
 
 import android.content.Context
-import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -9,7 +8,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import java.util.Locale
-import kotlin.math.roundToInt
 
 data class GameRenderState(
     val renderScale: Float = 1.0f,
@@ -23,59 +21,56 @@ class GameRenderManager(
     private val context: Context,
     private val scriptManager: ScriptManager
 ) {
-    companion object {
-        private const val TAG = "GameRenderManager"
-    }
-
     private val _state = MutableStateFlow(GameRenderState())
     val state: StateFlow<GameRenderState> = _state.asStateFlow()
 
-    private suspend fun getPhysicalDisplayMetrics(): Triple<Int, Int, Int>? {
-        val sizeRes = scriptManager.executeCommand("wm size")
-        val densityRes = scriptManager.executeCommand("wm density")
-        if (!sizeRes.isSuccess || !densityRes.isSuccess) return null
-
-        val sizeMatch = Regex("Physical size:\\s*(\\d+)x(\\d+)").find(sizeRes.stdout)
-        val densityMatch = Regex("Physical density:\\s*(\\d+)").find(densityRes.stdout)
-
-        val width = sizeMatch?.groupValues?.get(1)?.toIntOrNull() ?: return null
-        val height = sizeMatch.groupValues[2].toIntOrNull() ?: return null
-        val density = densityMatch?.groupValues?.get(1)?.toIntOrNull() ?: return null
-
-        return Triple(width, height, density)
-    }
-
-        suspend fun applyRenderScale(packageName: String, scale: Float): Boolean = withContext(Dispatchers.IO) {
-        if (packageName.isBlank()) return@withContext false
+    suspend fun applyRenderScale(packageName: String, scale: Float): Boolean = withContext(Dispatchers.IO) {
         val clampedScale = scale.coerceIn(0.50f, 1.0f)
         val formattedScale = String.format(Locale.US, "%.2f", clampedScale)
 
-        _state.update { it.copy(isOperating = true, statusMessage = "Aplicando Modo Ligero ${(clampedScale * 100).toInt()}%...") }
+        val targetPkg = packageName.ifBlank {
+            val res = scriptManager.executeCommand("dumpsys window | grep mCurrentFocus | awk -F'[ /]' '{print \$5}' | tr -d '}'")
+            res.stdout.trim()
+        }
 
-        if (clampedScale >= 0.98f) return@withContext resetRenderScale(packageName)
+        if (targetPkg.isBlank() || targetPkg.contains("gamebooster")) {
+            _state.update { it.copy(isOperating = false, statusMessage = "Abre el juego antes de aplicar") }
+            return@withContext false
+        }
 
-        val cmd = "device_config set_sync_disabled_for_tests persistent ; " +
-                  "device_config put game_overlay $packageName \"mode=2,downscaleFactor=$formattedScale\" && " +
-                  "cmd game mode performance $packageName ; " +
-                  "am force-stop $packageName && " +
-                  "monkey -p $packageName -c android.intent.category.LAUNCHER 1"
+        _state.update { it.copy(isOperating = true, statusMessage = "Aplicando ${(clampedScale * 100).toInt()}% a $targetPkg...") }
 
-        val result = scriptManager.executeCommand(cmd)
+        if (clampedScale >= 0.98f) return@withContext resetRenderScale(targetPkg)
+
+        val cmd = "cmd game mode performance $targetPkg ; " +
+                  "cmd game set --downscale $formattedScale $targetPkg ; " +
+                  "device_config put game_overlay $targetPkg \"mode=2,downscaleFactor=$formattedScale\" ; " +
+                  "am force-stop $targetPkg ; " +
+                  "monkey -p $targetPkg -c android.intent.category.LAUNCHER 1"
+
+        scriptManager.executeCommand(cmd)
 
         _state.update {
             it.copy(
                 renderScale = clampedScale,
-                isDownscaleActive = result.isSuccess,
+                isDownscaleActive = true,
                 isOperating = false,
-                statusMessage = if (result.isSuccess) "Modo Ligero activo: ${(clampedScale * 100).toInt()}%" else "Error: ${result.stderr.take(35)}"
+                statusMessage = "Aplicado ${(clampedScale * 100).toInt()}% en $targetPkg"
             )
         }
-        result.isSuccess
+        true
     }
 
     suspend fun resetRenderScale(packageName: String): Boolean = withContext(Dispatchers.IO) {
-        val cmd = "device_config delete game_overlay $packageName ; cmd game reset $packageName"
-        scriptManager.executeCommand(cmd)
+        val targetPkg = packageName.ifBlank {
+            val res = scriptManager.executeCommand("dumpsys window | grep mCurrentFocus | awk -F'[ /]' '{print \$5}' | tr -d '}'")
+            res.stdout.trim()
+        }
+
+        if (targetPkg.isNotBlank()) {
+            val cmd = "device_config delete game_overlay $targetPkg ; cmd game reset $targetPkg"
+            scriptManager.executeCommand(cmd)
+        }
 
         _state.update {
             it.copy(
