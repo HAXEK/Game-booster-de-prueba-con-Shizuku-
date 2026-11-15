@@ -1,4 +1,4 @@
-package com.example.shizuku
+ package com.example.shizuku
 
 import android.content.Context
 import android.util.Log
@@ -67,7 +67,7 @@ class GameRenderManager(
                 renderScale = clampedScale,
                 isDownscaleActive = result.isSuccess,
                 isOperating = false,
-                statusMessage = if (result.isSuccess) "Modo Ligero activo: ${(clampedScale * 100).toInt()}%" else "No soportado por el juego"
+                statusMessage = if (result.isSuccess) "Modo Ligero activo: ${(clampedScale * 100).toInt()}%" else "Error: ${result.stderr.take(35)}"
             )
         }
         result.isSuccess
@@ -76,34 +76,23 @@ class GameRenderManager(
     suspend fun resetRenderScale(packageName: String): Boolean = withContext(Dispatchers.IO) {
         val cmd = "device_config delete game_overlay $packageName ; cmd game reset $packageName"
         scriptManager.executeCommand(cmd)
+
         _state.update {
-            it.copy(renderScale = 1.0f, isDownscaleActive = false, isOperating = false, statusMessage = "Resolución nativa restaurada (100%)")
+            it.copy(
+                renderScale = 1.0f,
+                isDownscaleActive = false,
+                isOperating = false,
+                statusMessage = "Resolución nativa restaurada (100%)"
+            )
         }
         true
     }
 
-
     suspend fun toggleDisableMsaa(disable: Boolean): Boolean = withContext(Dispatchers.IO) {
-        val cmd = if (disable) {
-            "settings put global debug.hwui.force_msaa 0 ; setprop debug.egl.force_msaa 0 2>/dev/null ; echo ok"
-        } else {
-            "settings delete global debug.hwui.force_msaa ; echo ok"
-        }
+        val cmd = if (disable) "settings put global debug.hwui.force_msaa 0" else "settings delete global debug.hwui.force_msaa"
         val result = scriptManager.executeCommand(cmd)
-        val success = result.isSuccess
-
-        _state.update {
-            it.copy(
-                isMsaaDisabled = if (success) disable else it.isMsaaDisabled,
-                statusMessage = if (success) {
-                    if (disable) "Filtros pesados desactivados" else "Filtros GPU restablecidos"
-                } else {
-                    "Error filtros: ${result.stderr}"
-                }
-            )
-        }
-
-        success
+        _state.update { it.copy(isMsaaDisabled = if (result.isSuccess) disable else it.isMsaaDisabled) }
+        result.isSuccess
     }
 
     suspend fun resetAll(packageName: String?): Boolean = withContext(Dispatchers.IO) {
