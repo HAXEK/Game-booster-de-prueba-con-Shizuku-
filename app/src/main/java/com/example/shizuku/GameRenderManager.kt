@@ -24,29 +24,36 @@ class GameRenderManager(
     private val _state = MutableStateFlow(GameRenderState())
     val state: StateFlow<GameRenderState> = _state.asStateFlow()
 
-    suspend fun applyRenderScale(packageName: String, scale: Float): Boolean = withContext(Dispatchers.IO) {
-        val clampedScale = scale.coerceIn(0.50f, 1.0f)
-        val formattedScale = String.format(Locale.US, "%.2f", clampedScale)
+        suspend fun applyRenderScale(packageName: String, scale: Float): Boolean = withContext(Dispatchers.IO) {
+        val clampedScale = scale.coerceIn(0.60f, 1.0f)
+
+        if (clampedScale >= 0.98f) return@withContext resetRenderScale(packageName)
+
+        val sizeRes = scriptManager.executeCommand("wm size")
+        val densityRes = scriptManager.executeCommand("wm density")
+        val sizeMatch = Regex("Physical size:\\s*(\\d+)x(\\d+)").find(sizeRes.stdout)
+        val densityMatch = Regex("Physical density:\\s*(\\d+)").find(densityRes.stdout)
+
+        val physW = sizeMatch?.groupValues?.get(1)?.toIntOrNull() ?: 1220
+        val physH = sizeMatch?.groupValues?.get(2)?.toIntOrNull() ?: 2712
+        val physDpi = densityMatch?.groupValues?.get(1)?.toIntOrNull() ?: 480
+
+        val targetW = ((physW * clampedScale).toInt() / 2) * 2
+        val targetH = ((physH * clampedScale).toInt() / 2) * 2
+        val targetDpi = ((physDpi * clampedScale).toInt()).coerceAtLeast(240)
 
         val targetPkg = packageName.ifBlank {
-            val res = scriptManager.executeCommand("dumpsys window | grep mCurrentFocus | awk -F'[ /]' '{print \$5}' | tr -d '}'")
-            res.stdout.trim()
+            scriptManager.executeCommand("dumpsys window | grep mCurrentFocus | awk -F'[ /]' '{print \$5}' | tr -d '}'").stdout.trim()
         }
 
-        if (targetPkg.isBlank() || targetPkg.contains("gamebooster")) {
-            _state.update { it.copy(isOperating = false, statusMessage = "Abre el juego antes de aplicar") }
-            return@withContext false
+        val cmd = buildString {
+            if (targetPkg.isNotBlank()) append("cmd game reset $targetPkg ; ")
+            append("wm size ${targetW}x${targetH} ; ")
+            append("wm density $targetDpi ; ")
+            if (targetPkg.isNotBlank()) {
+                append("am force-stop $targetPkg ; monkey -p $targetPkg -c android.intent.category.LAUNCHER 1")
+            }
         }
-
-        _state.update { it.copy(isOperating = true, statusMessage = "Aplicando ${(clampedScale * 100).toInt()}% a $targetPkg...") }
-
-        if (clampedScale >= 0.98f) return@withContext resetRenderScale(targetPkg)
-
-        val cmd = "cmd game mode performance $targetPkg ; " +
-                  "cmd game set --downscale $formattedScale $targetPkg ; " +
-                  "device_config put game_overlay $targetPkg \"mode=2,downscaleFactor=$formattedScale\" ; " +
-                  "am force-stop $targetPkg ; " +
-                  "monkey -p $targetPkg -c android.intent.category.LAUNCHER 1"
 
         scriptManager.executeCommand(cmd)
 
@@ -55,7 +62,7 @@ class GameRenderManager(
                 renderScale = clampedScale,
                 isDownscaleActive = true,
                 isOperating = false,
-                statusMessage = "Aplicado ${(clampedScale * 100).toInt()}% en $targetPkg"
+                statusMessage = "Pantalla completa ${(clampedScale * 100).toInt()}% (${targetW}x${targetH})"
             )
         }
         true
@@ -63,14 +70,13 @@ class GameRenderManager(
 
     suspend fun resetRenderScale(packageName: String): Boolean = withContext(Dispatchers.IO) {
         val targetPkg = packageName.ifBlank {
-            val res = scriptManager.executeCommand("dumpsys window | grep mCurrentFocus | awk -F'[ /]' '{print \$5}' | tr -d '}'")
-            res.stdout.trim()
+            scriptManager.executeCommand("dumpsys window | grep mCurrentFocus | awk -F'[ /]' '{print \$5}' | tr -d '}'").stdout.trim()
         }
-
-        if (targetPkg.isNotBlank()) {
-            val cmd = "device_config delete game_overlay $targetPkg ; cmd game reset $targetPkg"
-            scriptManager.executeCommand(cmd)
+        val cmd = buildString {
+            if (targetPkg.isNotBlank()) append("cmd game reset $targetPkg ; ")
+            append("wm size reset ; wm density reset")
         }
+        scriptManager.executeCommand(cmd)
 
         _state.update {
             it.copy(
