@@ -38,11 +38,14 @@ class GameRenderManager(
 
         val newW = ((w * clampedScale).toInt() / 2) * 2
         val newH = ((h * clampedScale).toInt() / 2) * 2
+        val dOut = scriptManager.executeCommand("wm density").stdout
+        val d = Regex("Physical density:\\s*(\\d+)").find(dOut)?.groupValues?.get(1)?.toIntOrNull() ?: 480
+        val newD = ((d * clampedScale).toInt()).coerceAtLeast(240)
 
         val cmd = if (pkg.isNotBlank()) {
-            "wm size ${newW}x${newH} ; am force-stop $pkg"
+            "wm size ${newW}x${newH} ; wm density $newD ; am force-stop $pkg"
         } else {
-            "wm size ${newW}x${newH}"
+            "wm size ${newW}x${newH} ; wm density $newD"
         }
 
         scriptManager.executeCommand(cmd)
