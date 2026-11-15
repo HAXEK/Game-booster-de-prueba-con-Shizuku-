@@ -566,23 +566,23 @@ fun FloatingDraggableBubble(
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
-            .pointerInput(onClick) {
-                // Lógica de gestos para arrastrar y hacer clic (ver código completo en el repositorio)
-            }
-            .size(width = 10.dp, height = 56.dp)
+            .size(width = 16.dp, height = 58.dp)
             .clip(RoundedCornerShape(topEnd = 10.dp, bottomEnd = 10.dp))
-            .background(Color(0x880B0F19))
-            .border(
-                width = 1.dp,
-                color = RmAccentRed.copy(alpha = 0.7f),
-                shape = RoundedCornerShape(topEnd = 10.dp, bottomEnd = 10.dp)
-            )
+            .background(Color(0x990B0F19))
+            .border(1.dp, RmAccentRed.copy(alpha = 0.75f), RoundedCornerShape(topEnd = 10.dp, bottomEnd = 10.dp))
+            .clickable { onClick() }
+            .pointerInput(Unit) {
+                detectDragGestures { change, dragAmount ->
+                    change.consume()
+                    onDrag(dragAmount.x, dragAmount.y)
+                }
+            }
     ) {
         Box(
             modifier = Modifier
                 .size(width = 3.dp, height = 26.dp)
                 .clip(CircleShape)
-                .background(RmAccentRed.copy(alpha = 0.9f))
+                .background(RmAccentRed)
         )
     }
 }
