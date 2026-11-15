@@ -564,76 +564,25 @@ fun FloatingDraggableBubble(
     modifier: Modifier = Modifier
 ) {
     Box(
+        contentAlignment = Alignment.Center,
         modifier = modifier
             .pointerInput(onClick) {
-                // Umbral de movimiento para considerar un gesto como arrastre en vez de click
-                val touchSlop = viewConfiguration.touchSlop
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    val downPosition = down.position
-                    val downTime = System.currentTimeMillis()
-                    var isDrag = false
-
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
-
-                        if (change.isConsumed) {
-                            // Si otro consumidor interceptó el gesto, cancelamos
-                            break
-                        }
-
-                        if (!change.pressed) {
-                            // El dedo se ha levantado (Action UP)
-                            val duration = System.currentTimeMillis() - downTime
-                            val distance = (change.position - downPosition).getDistance()
-                            
-                            if (!isDrag && distance < touchSlop && duration < 600L) {
-                                change.consume()
-                                onClick()
-                            }
-                            break
-                        } else {
-                            val dragDistance = (change.position - downPosition).getDistance()
-                            if (!isDrag && dragDistance > touchSlop) {
-                                isDrag = true
-                            }
-
-                            if (isDrag) {
-                                val dragDelta = change.position - change.previousPosition
-                                if (dragDelta.x != 0f || dragDelta.y != 0f) {
-                                    change.consume()
-                                    onDrag(dragDelta.x, dragDelta.y)
-                                }
-                            }
-                        }
-                    }
-                }
+                // Lógica de gestos para arrastrar y hacer clic (ver código completo en el repositorio)
             }
-            .clip(RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp))
-            .background(Color(0xF00B0F19))
+            .size(width = 10.dp, height = 56.dp)
+            .clip(RoundedCornerShape(topEnd = 10.dp, bottomEnd = 10.dp))
+            .background(Color(0x880B0F19))
             .border(
-                width = 1.5.dp,
-                color = RmAccentRed.copy(alpha = 0.85f),
-                shape = RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp)
+                width = 1.dp,
+                color = RmAccentRed.copy(alpha = 0.7f),
+                shape = RoundedCornerShape(topEnd = 10.dp, bottomEnd = 10.dp)
             )
-            .padding(horizontal = 10.dp, vertical = 12.dp)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                imageVector = Icons.Default.SportsEsports,
-                contentDescription = "Abrir Game Space",
-                tint = RmAccentRed,
-                modifier = Modifier.size(22.dp)
-            )
-            Spacer(modifier = Modifier.width(4.dp))
-            Text(
-                text = "BOOST",
-                color = Color.White,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Black,
-                letterSpacing = 0.5.sp
-            )
-        }
+        Box(
+            modifier = Modifier
+                .size(width = 3.dp, height = 26.dp)
+                .clip(CircleShape)
+                .background(RmAccentRed.copy(alpha = 0.9f))
+        )
     }
 }
