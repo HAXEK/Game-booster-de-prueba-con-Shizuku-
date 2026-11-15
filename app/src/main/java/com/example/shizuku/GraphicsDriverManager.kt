@@ -167,66 +167,54 @@ class GraphicsDriverManager(
     suspend fun applyDriver(packageName: String, driver: GraphicsDriver): Boolean = withContext(Dispatchers.IO) {
         if (packageName.isBlank()) return@withContext false
 
+        _state.update { it.copy(isOperating = true, statusMessage = "Aplicando ${driver.displayName}...") }
+
+        if (driver == GraphicsDriver.DEFAULT) return@withContext resetDriver(packageName)
+
+        val cmd = when (driver) {
+            GraphicsDriver.ANGLE ->
+                "settings put global angle_gl_driver_selection_pkgs $packageName && " +
+                "settings put global angle_gl_driver_selection_values angle && " +
+                "settings delete global updatable_driver_production_opt_in_apps"
+            GraphicsDriver.OPENGL ->
+                "settings put global angle_gl_driver_selection_pkgs $packageName && " +
+                "settings put global angle_gl_driver_selection_values native && " +
+                "settings delete global updatable_driver_production_opt_in_apps"
+            GraphicsDriver.VULKAN ->
+                "settings delete global angle_gl_driver_selection_pkgs ; " +
+                "settings delete global angle_gl_driver_selection_values ; " +
+                "settings put global updatable_driver_production_opt_in_apps $packageName"
+            else -> ""
+        }
+
+        val fullCmd = "$cmd && am force-stop $packageName && monkey -p $packageName -c android.intent.category.LAUNCHER 1"
+        val result = scriptManager.executeCommand(fullCmd)
+
         _state.update {
             it.copy(
-                isOperating = true,
-                statusMessage = "Aplicando controlador ${driver.displayName}..."
-            )
-        }
-
-        val isReset = driver == GraphicsDriver.DEFAULT
-        val action = if (isReset) "reset" else driver.id
-        val result = scriptManager.executeScript("apply_graphics_driver.sh", listOf(action, packageName))
-        val success = result.isSuccess
-
-        _state.update { current ->
-            current.copy(
-                currentActiveDriver = if (success) driver else current.currentActiveDriver,
-                isCustomDriverActive = success && !isReset,
+                currentActiveDriver = if (result.isSuccess) driver else it.currentActiveDriver,
+                isCustomDriverActive = result.isSuccess,
                 isOperating = false,
-                statusMessage = if (success) {
-                    if (isReset) {
-                        "Controlador por defecto restaurado (${current.detectedDefaultDriver.displayName})"
-                    } else {
-                        "Controlador activo: ${driver.displayName}"
-                    }
-                } else {
-                    "Fallo al aplicar controlador: ${result.stderr.take(50)}"
-                }
+                statusMessage = if (result.isSuccess) "${driver.displayName} aplicado" else "Error: ${result.stderr.take(40)}"
             )
         }
-
-        Log.d(TAG, "applyDriver ($driver) en $packageName: $success | ${result.stdout}")
-        success
+        result.isSuccess
     }
 
-    /**
-     * Restablece el controlador gráfico del juego a su configuración estándar.
-     * Llamado automáticamente al salir del juego o al destruir el servicio flotante.
-     *
-     * @param packageName Paquete del juego, opcional.
-     */
     suspend fun resetDriver(packageName: String?): Boolean = withContext(Dispatchers.IO) {
+        val cmd = "settings delete global angle_gl_driver_selection_pkgs ; " +
+                  "settings delete global angle_gl_driver_selection_values ; " +
+                  "settings delete global updatable_driver_production_opt_in_apps"
+        scriptManager.executeCommand(cmd)
+
         _state.update {
             it.copy(
-                isOperating = true,
-                statusMessage = "Restableciendo controlador gráfico a valores del sistema..."
-            )
-        }
-
-        val result = scriptManager.executeScript("apply_graphics_driver.sh", listOf("reset", packageName ?: ""))
-        val success = result.isSuccess
-
-        _state.update { current ->
-            current.copy(
-                currentActiveDriver = current.detectedDefaultDriver,
+                currentActiveDriver = GraphicsDriver.DEFAULT,
                 isCustomDriverActive = false,
                 isOperating = false,
-                statusMessage = "Controlador gráfico restablecido al sistema"
+                statusMessage = "Controlador restaurado"
             )
         }
-
-        Log.i(TAG, "resetDriver completado: $success")
-        success
+        true
     }
 }
