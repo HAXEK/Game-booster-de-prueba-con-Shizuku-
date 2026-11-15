@@ -7,7 +7,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
-import java.util.Locale
 
 data class GameRenderState(
     val renderScale: Float = 1.0f,
@@ -24,25 +23,35 @@ class GameRenderManager(
     private val _state = MutableStateFlow(GameRenderState())
     val state: StateFlow<GameRenderState> = _state.asStateFlow()
 
-            suspend fun applyRenderScale(packageName: String, scale: Float): Boolean = withContext(Dispatchers.IO) {
-        // Bloque inicial de escalado de renderizado...
-                
-val clampedScale = scale.coerceIn(0.50f, 1.0f)
-        val formattedScale = String.format(Locale.US, "%.2f", clampedScale)
-                        val pkg = packageName.ifBlank { scriptManager.executeCommand("dumpsys activity activities | grep mResumedActivity | cut -d' ' -f8 | cut -d'/' -f1").stdout.trim() }
-  if (pkg.isBlank() || pkg.contains("gamebooster")) return@withContext false
-        if (clampedScale >= 0.98f) return@withContext resetRenderScale(pkg)
-        val cmd = "wm size reset ; wm density reset ; cmd game mode 2 $pkg ; device_config put game_overlay $pkg mode=2,downscaleFactor=$formattedScale ; am force-stop $pkg"
+    suspend fun applyRenderScale(packageName: String, scale: Float): Boolean = withContext(Dispatchers.IO) {
+        val clampedScale = scale.coerceIn(0.60f, 1.0f)
+        if (clampedScale >= 0.98f) return@withContext resetRenderScale(packageName)
+
+        val pkg = packageName.ifBlank {
+            scriptManager.executeCommand("dumpsys window windows | grep -E 'mCurrentFocus|mFocusedApp' | grep -oE '[a-zA-Z0-9_]+(\\.[a-zA-Z0-9_]+)+' | grep -v 'gamebooster' | grep -v 'android' | grep -v 'miui' | head -n 1").stdout.trim()
+        }
+
+        val sizeOut = scriptManager.executeCommand("wm size").stdout
+        val m = Regex("Physical size:\\s*(\\d+)x(\\d+)").find(sizeOut)
+        val w = m?.groupValues?.get(1)?.toIntOrNull() ?: 1220
+        val h = m?.groupValues?.get(2)?.toIntOrNull() ?: 2712
+
+        val newW = ((w * clampedScale).toInt() / 2) * 2
+        val newH = ((h * clampedScale).toInt() / 2) * 2
+
+        val cmd = if (pkg.isNotBlank()) {
+            "wm size ${newW}x${newH} ; am force-stop $pkg"
+        } else {
+            "wm size ${newW}x${newH}"
+        }
 
         scriptManager.executeCommand(cmd)
-        _state.update { it.copy(renderScale = clampedScale, isDownscaleActive = true, isOperating = false, statusMessage = "Listo: abre el juego (${(clampedScale * 100).toInt()}%)") }
+        _state.update { it.copy(renderScale = clampedScale, isDownscaleActive = true, isOperating = false, statusMessage = "Activo ${(clampedScale * 100).toInt()}% (${newW}x${newH})") }
         true
-            }
+    }
+
     suspend fun resetRenderScale(packageName: String): Boolean = withContext(Dispatchers.IO) {
-        val pkg = packageName.ifBlank { scriptManager.executeCommand("dumpsys activity activities | grep mResumedActivity | cut -d' ' -f8 | cut -d'/' -f1").stdout.trim() }
-        if (pkg.isNotBlank()) {
-            scriptManager.executeCommand("wm size reset ; wm density reset ; device_config delete game_overlay $pkg ; cmd game reset $pkg")
-        }
+        scriptManager.executeCommand("wm size reset ; wm density reset")
         _state.update { it.copy(renderScale = 1.0f, isDownscaleActive = false, isOperating = false, statusMessage = "Nativo (100%)") }
         true
     }
